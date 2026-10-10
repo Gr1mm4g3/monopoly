@@ -46,6 +46,14 @@ def capture_screenshots():
     pygame.image.save(game.screen, "screenshots/03_gameplay_board.png")
     print("Saved 03_gameplay_board.png")
 
+    # 4. Capture Auction Modal in action
+    game.start_auction(game.board.tiles[26])
+    game.active_modal.current_bid = 140
+    game.active_modal.high_bidder = game.players[1]
+    game.render()
+    pygame.image.save(game.screen, "screenshots/04_auction_modal.png")
+    print("Saved 04_auction_modal.png")
+
     print("All snapshots captured successfully!")
 
 if __name__ == "__main__":

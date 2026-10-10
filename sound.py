@@ -132,6 +132,16 @@ class SoundManager:
             f = max(80, 220 - t * 150)
             return (math.sin(2 * math.pi * f * t) + 0.3 * math.sin(2 * math.pi * (f * 1.5) * t)) * envelope
 
+        # 11. Auction gavel strike: crisp double wooden tap
+        def gen_gavel(t, i, n):
+            t_rel = t if t < 0.08 else (t - 0.08)
+            envelope = math.exp(-t_rel * 45.0)
+            f = 420
+            tone = (math.sin(2 * math.pi * f * t_rel) + 
+                    0.6 * math.sin(2 * math.pi * 840 * t_rel) + 
+                    0.3 * math.sin(2 * math.pi * 1260 * t_rel))
+            return tone * envelope
+
         self.sounds["click"] = self._make_pcm_sound(gen_click, duration=0.08, volume=0.5)
         self.sounds["dice"] = self._make_pcm_sound(gen_dice, duration=0.25, volume=0.7)
         self.sounds["buy"] = self._make_pcm_sound(gen_buy, duration=0.28, volume=0.6)
@@ -142,6 +152,7 @@ class SoundManager:
         self.sounds["build"] = self._make_pcm_sound(gen_build, duration=0.25, volume=0.65)
         self.sounds["trade"] = self._make_pcm_sound(gen_trade, duration=0.3, volume=0.6)
         self.sounds["bankrupt"] = self._make_pcm_sound(gen_bankrupt, duration=0.6, volume=0.7)
+        self.sounds["gavel"] = self._make_pcm_sound(gen_gavel, duration=0.2, volume=0.75)
 
     def play(self, name):
         """Plays a pre-generated sound if sound is enabled."""

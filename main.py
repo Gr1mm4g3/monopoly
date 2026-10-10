@@ -22,7 +22,7 @@ from player import Player
 from cards import CardManager
 from ai import AIEngine
 from ui import Button, EventLog, PlayerPanel, DiceWidget, DeedCardView
-from modals import BuyPropertyModal, CardModal, BuildModal, MortgageModal, TradeModal
+from modals import BuyPropertyModal, CardModal, BuildModal, MortgageModal, TradeModal, AuctionModal
 from save_manager import SaveManager, SAVE_FILE
 
 # Game Screen States
@@ -145,6 +145,8 @@ class MetroTycoonGame:
     def toggle_speed(self):
         self.fast_ai = not self.fast_ai
         self.btn_speed.text = "3x" if self.fast_ai else "1x"
+        if self.active_modal and hasattr(self.active_modal, "fast_ai"):
+            self.active_modal.fast_ai = self.fast_ai
 
     def start_game(self):
         """Constructs players and begins the match."""
@@ -285,16 +287,18 @@ class MetroTycoonGame:
                         p.properties.append(tile.id)
                         sound_fx.play("buy")
                         self.log(f"{p.name} purchased {tile.name} for ${tile.price}!", COLOR_TEXT_GREEN)
+                        self.turn_phase = PHASE_POST_ROLL
+                        self._update_hud_buttons()
                     else:
-                        self.log(f"{p.name} decided not to purchase {tile.name}.", COLOR_TEXT_MUTED)
-                    self.turn_phase = PHASE_POST_ROLL
-                    self._update_hud_buttons()
+                        self.log(f"{p.name} passed on buying {tile.name}. Starting auction!", COLOR_TEXT_MUTED)
+                        self.start_auction(tile)
                 else:
                     # Prompt Human
                     self.active_modal = BuyPropertyModal(
                         tile, p, self.font_main, self.font_bold,
                         on_buy=lambda: self._execute_human_buy(tile),
-                        on_pass=lambda: self._execute_human_pass(tile)
+                        on_pass=lambda: self._execute_human_pass(tile),
+                        on_auction=lambda: self.start_auction(tile)
                     )
             elif tile.owner.id != p.id:
                 # Owned by another player -> Rent!
@@ -378,6 +382,37 @@ class MetroTycoonGame:
     def _execute_human_pass(self, tile):
         self.log(f"You passed on buying {tile.name}.", COLOR_TEXT_MUTED)
         self.active_modal = None
+        self.turn_phase = PHASE_POST_ROLL
+        self._update_hud_buttons()
+
+    def start_auction(self, tile):
+        self.active_modal = None
+        self.log(f"Auction started for {tile.name} (List Price: ${tile.price})!", COLOR_TEXT_GOLD)
+        sound_fx.play("gavel")
+        self.active_modal = AuctionModal(
+            tile=tile,
+            players=self.players,
+            active_player=self.current_player(),
+            font=self.font_main,
+            bold_font=self.font_bold,
+            title_font=self.font_title,
+            ai_engine=self.ai_engine,
+            all_tiles=self.board.tiles,
+            sound_fx=sound_fx,
+            on_complete=lambda winner, winning_bid: self._finish_auction(tile, winner, winning_bid),
+            fast_ai=self.fast_ai
+        )
+
+    def _finish_auction(self, tile, winner, winning_bid):
+        self.active_modal = None
+        if winner:
+            winner.deduct_cash(winning_bid)
+            tile.owner = winner
+            winner.properties.append(tile.id)
+            sound_fx.play("buy")
+            self.log(f"{winner.name} won {tile.name} at auction for ${winning_bid}!", COLOR_TEXT_GREEN)
+        else:
+            self.log(f"Auction ended without bids. {tile.name} remains unsold.", COLOR_TEXT_MUTED)
         self.turn_phase = PHASE_POST_ROLL
         self._update_hud_buttons()
 
@@ -551,6 +586,7 @@ class MetroTycoonGame:
             self.on_end_turn()
 
     def on_end_turn(self):
+        self.active_modal = None
         p = self.current_player()
         p.doubles_count = 0
         self.btn_end.disabled = True
@@ -848,6 +884,9 @@ class MetroTycoonGame:
                 self._handle_game_over_events(event)
 
     def update(self):
+        if self.active_modal and hasattr(self.active_modal, "update"):
+            self.active_modal.update()
+
         if self.state == STATE_PLAYING:
             self.update_movement()
             self.update_ai()

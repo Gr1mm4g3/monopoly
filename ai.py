@@ -232,3 +232,83 @@ class AIEngine:
             return False, "You're close, but you need to sweeten the deal with more cash."
         else:
             return False, "This offer is unacceptable to my financial advisors."
+
+    def evaluate_auction_bid(self, ai_player, tile, current_bid, tiles, players):
+        """
+        Evaluates an unowned property being auctioned and returns the AI's proposed bid amount,
+        or 0 if the AI decides to pass/withdraw from the auction.
+        """
+        profile = self.get_profile(ai_player)
+        reserve = profile["cash_reserve"]
+
+        min_bid = 10 if current_bid == 0 else current_bid + 10
+        if ai_player.cash < min_bid:
+            return 0
+
+        # Base value starts at printed tile price
+        val = float(tile.price)
+
+        # Strategic monopoly calculation
+        group = getattr(tile, "group", None)
+        owned_in_group = 0
+        if group:
+            needed = GROUP_COUNTS.get(group, 3)
+            owned_in_group = sum(1 for ptid in ai_player.properties if tiles[ptid].group == group)
+
+            # High bonus if completing monopoly
+            if (owned_in_group + 1) == needed:
+                val *= 2.2
+            elif (owned_in_group + 2) == needed:
+                val *= 1.35
+
+            # High bonus if blocking opponent monopoly
+            for other in players:
+                if other.id != ai_player.id and not other.is_bankrupt:
+                    other_owned = sum(1 for ptid in other.properties if tiles[ptid].group == group)
+                    if (other_owned + 1) == needed:
+                        val *= 1.45
+                        break
+
+        # Transit and utility scaling
+        if tile.type == "TRANSIT":
+            transits_owned = sum(1 for ptid in ai_player.properties if tiles[ptid].type == "TRANSIT")
+            val *= (1.0 + 0.25 * transits_owned)
+        elif tile.type == "UTILITY":
+            utils_owned = sum(1 for ptid in ai_player.properties if tiles[ptid].type == "UTILITY")
+            val *= (1.0 + 0.3 * utils_owned)
+
+        # Personality modifier
+        aggression = profile.get("build_aggression", 0.5)
+        trade_eager = profile.get("trade_eagerness", 0.5)
+        personality_mult = 0.8 + (aggression * 0.35) + (trade_eager * 0.15)
+        val *= personality_mult
+
+        # Cash safety constraint
+        is_completing_monopoly = bool(group and (owned_in_group + 1 == GROUP_COUNTS.get(group, 3)))
+        if is_completing_monopoly:
+            # If completing monopoly, AI is willing to spend down into reserves
+            safe_max_cash = ai_player.cash - 20
+        else:
+            # Cautious keeps full reserve, Tycoon can dip to 70% of reserve
+            reserve_factor = 1.0 if aggression < 0.5 else 0.7
+            safe_max_cash = ai_player.cash - int(reserve * reserve_factor)
+
+        max_willing = min(val, safe_max_cash)
+
+        if min_bid > max_willing:
+            return 0
+
+        # Dynamic bidding increment
+        gap = max_willing - current_bid
+        if gap >= 80 and aggression > 0.65:
+            step = 25
+        else:
+            step = 10
+
+        next_bid = min_bid if current_bid == 0 else current_bid + step
+        next_bid = min(next_bid, int(max_willing), ai_player.cash)
+
+        if next_bid <= current_bid:
+            return 0
+
+        return next_bid

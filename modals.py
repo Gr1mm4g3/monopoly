@@ -1,45 +1,62 @@
 """
 Interactive dialog modals for Metro Tycoon.
-Contains BuyPropertyModal, CardModal, TradeModal, BuildModal, and MortgageModal.
+Contains BuyPropertyModal, AuctionModal, CardModal, TradeModal, BuildModal, and MortgageModal.
 """
 
+import os
 import pygame
 from constants import (
     SCREEN_WIDTH, SCREEN_HEIGHT, COLOR_TEXT_WHITE, COLOR_TEXT_MUTED,
-    COLOR_TEXT_GOLD, COLOR_TEXT_GREEN, COLOR_TEXT_RED, COLOR_ACCENT_BLUE,
-    COLOR_ACCENT_GREEN, COLOR_ACCENT_RED, DISTRICT_COLORS, GROUP_COUNTS
+    COLOR_TEXT_GOLD, COLOR_TEXT_GREEN, COLOR_TEXT_RED, COLOR_TEXT_AMBER, COLOR_ACCENT_BLUE,
+    COLOR_ACCENT_GREEN, COLOR_ACCENT_RED, COLOR_ACCENT_AMBER, DISTRICT_COLORS,
+    GROUP_COUNTS, PLAYER_COLORS
 )
 from ui import Button, DeedCardView
 
 class BuyPropertyModal:
     """Popup modal shown when landing on an unowned property."""
-    def __init__(self, tile, player, font, title_font, on_buy, on_pass):
+    def __init__(self, tile, player, font, title_font, on_buy, on_pass, on_auction=None):
         self.tile = tile
         self.player = player
         self.font = font
         self.title_font = title_font
         self.on_buy = on_buy
         self.on_pass = on_pass
+        self.on_auction = on_auction
         
         # Geometry
-        self.w = 340
-        self.h = 450
+        self.w = 360
+        self.h = 475
         self.x = (SCREEN_WIDTH - self.w) // 2
         self.y = (SCREEN_HEIGHT - self.h) // 2
         self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
         
         can_afford = player.cash >= tile.price
-        btn_y = self.y + self.h - 60
+        
+        # Primary Buy button
+        buy_y = self.y + self.h - 96
         self.btn_buy = Button(
-            (self.x + 20, btn_y, 140, 44),
+            (self.x + 25, buy_y, self.w - 50, 40),
             f"Buy (${tile.price})",
             font,
             bg_color=COLOR_ACCENT_GREEN,
             disabled=not can_afford,
             callback=on_buy
         )
+        
+        # Sub buttons: Auction & Pass
+        sub_y = self.y + self.h - 48
+        half_w = (self.w - 60) // 2
+        auction_cb = on_auction if on_auction else on_pass
+        self.btn_auction = Button(
+            (self.x + 25, sub_y, half_w, 36),
+            "Auction",
+            font,
+            bg_color=COLOR_ACCENT_AMBER,
+            callback=auction_cb
+        )
         self.btn_pass = Button(
-            (self.x + 180, btn_y, 140, 44),
+            (self.x + 35 + half_w, sub_y, half_w, 36),
             "Pass",
             font,
             bg_color=(71, 85, 105),
@@ -49,6 +66,8 @@ class BuyPropertyModal:
 
     def handle_event(self, event):
         if self.btn_buy.handle_event(event):
+            return True
+        if self.btn_auction.handle_event(event):
             return True
         if self.btn_pass.handle_event(event):
             return True
@@ -69,11 +88,400 @@ class BuyPropertyModal:
         surface.blit(t_surf, t_surf.get_rect(center=(self.rect.centerx, self.y + 24)))
 
         # Mini deed card preview
-        self.deed_view.draw(surface, self.tile, self.x + 40, self.y + 48, width=260, height=324)
+        self.deed_view.draw(surface, self.tile, self.x + 50, self.y + 46, width=260, height=315)
 
         # Draw buttons
         self.btn_buy.draw(surface)
+        self.btn_auction.draw(surface)
         self.btn_pass.draw(surface)
+
+
+class AuctionModal:
+    """
+    Popup modal for auctioning unowned properties among all active players.
+    All non-bankrupt players participate in turn-based round-robin bidding.
+    Provides human quick-bid increments (+10, +25, +50, +100) and pass buttons,
+    with AI autonomous decision-making and personality-driven valuations.
+    """
+    def __init__(self, tile, players, active_player, font, bold_font, title_font,
+                 ai_engine, all_tiles, sound_fx, on_complete, fast_ai=False):
+        self.tile = tile
+        self.players = players
+        self.active_player = active_player
+        self.font = font
+        self.bold_font = bold_font
+        self.title_font = title_font
+        self.ai_engine = ai_engine
+        self.all_tiles = all_tiles
+        self.sound_fx = sound_fx
+        self.on_complete = on_complete
+        self.fast_ai = fast_ai
+
+        # Geometry
+        self.w = 780
+        self.h = 520
+        self.x = (SCREEN_WIDTH - self.w) // 2
+        self.y = (SCREEN_HEIGHT - self.h) // 2
+        self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
+
+        # Active participants: non-bankrupt with at least $10
+        self.eligible_bidders = [p for p in players if not p.is_bankrupt and p.cash >= 10]
+        self.active_bidders = list(self.eligible_bidders)
+        self.passed_bidders = set()
+        for p in players:
+            if p.is_bankrupt or p.cash < 10:
+                self.passed_bidders.add(p.id)
+
+        self.current_bid = 0
+        self.high_bidder = None
+        self.winner = None
+        self.winning_bid = 0
+        self.state = "BIDDING"  # "BIDDING" or "FINISHED"
+
+        if active_player in self.active_bidders:
+            self.bidder_idx = self.active_bidders.index(active_player)
+        else:
+            self.bidder_idx = 0
+
+        self.recent_events = []
+        self.ai_timer = 0
+        self.auto_close_timer = 0
+        self.all_ai = all(p.is_ai for p in players)
+
+        # Left Column View
+        self.deed_view = DeedCardView(font, title_font)
+
+        # Right Column Controls
+        rx = self.x + 295
+        btn_y = self.y + 400
+
+        # Human Quick Bid Buttons
+        btn_w = 90
+        btn_h = 36
+        gap = 8
+        self.btn_bid_10 = Button(
+            (rx + 10, btn_y, btn_w, btn_h), "+ $10", font,
+            bg_color=COLOR_ACCENT_BLUE,
+            callback=lambda: self._handle_human_bid(10)
+        )
+        self.btn_bid_25 = Button(
+            (rx + 10 + (btn_w + gap), btn_y, btn_w, btn_h), "+ $25", font,
+            bg_color=COLOR_ACCENT_BLUE,
+            callback=lambda: self._handle_human_bid(25)
+        )
+        self.btn_bid_50 = Button(
+            (rx + 10 + 2 * (btn_w + gap), btn_y, btn_w, btn_h), "+ $50", font,
+            bg_color=COLOR_ACCENT_BLUE,
+            callback=lambda: self._handle_human_bid(50)
+        )
+        self.btn_bid_100 = Button(
+            (rx + 10 + 3 * (btn_w + gap), btn_y, btn_w, btn_h), "+ $100", font,
+            bg_color=COLOR_ACCENT_BLUE,
+            callback=lambda: self._handle_human_bid(100)
+        )
+        self.btn_pass = Button(
+            (rx + 10, btn_y + 46, 175, 38), "Pass / Withdraw", font,
+            bg_color=(185, 28, 28),
+            callback=self._handle_human_pass
+        )
+
+        # Continue Button (for Finished state)
+        self.btn_continue = Button(
+            (rx + 130, btn_y + 24, 200, 44), "Continue", bold_font,
+            bg_color=COLOR_ACCENT_GREEN,
+            callback=self.finish
+        )
+
+        if len(self.active_bidders) == 0:
+            self._conclude_auction(None, 0)
+        else:
+            self._update_human_buttons()
+
+    def _update_human_buttons(self):
+        if self.state != "BIDDING" or len(self.active_bidders) == 0:
+            return
+        current = self.active_bidders[self.bidder_idx]
+        if not current.is_ai:
+            base = 10 if self.current_bid == 0 else self.current_bid
+            self.btn_bid_10.text = "+ $10" if self.current_bid > 0 else "$10"
+            self.btn_bid_25.text = "+ $25" if self.current_bid > 0 else "$25"
+            self.btn_bid_50.text = "+ $50" if self.current_bid > 0 else "$50"
+            self.btn_bid_100.text = "+ $100" if self.current_bid > 0 else "$100"
+
+            self.btn_bid_10.disabled = (base + (10 if self.current_bid > 0 else 0) > current.cash)
+            self.btn_bid_25.disabled = (base + (25 if self.current_bid > 0 else 15) > current.cash)
+            self.btn_bid_50.disabled = (base + (50 if self.current_bid > 0 else 40) > current.cash)
+            self.btn_bid_100.disabled = (base + (100 if self.current_bid > 0 else 90) > current.cash)
+            self.btn_pass.disabled = False
+
+    def _handle_human_bid(self, increment):
+        if self.state != "BIDDING" or len(self.active_bidders) == 0:
+            return
+        current = self.active_bidders[self.bidder_idx]
+        if current.is_ai:
+            return
+        amount = increment if self.current_bid == 0 else self.current_bid + increment
+        if amount <= current.cash:
+            self._apply_bid(current, amount)
+
+    def _handle_human_pass(self):
+        if self.state != "BIDDING" or len(self.active_bidders) == 0:
+            return
+        current = self.active_bidders[self.bidder_idx]
+        if current.is_ai:
+            return
+        self._apply_pass(current)
+
+    def _apply_bid(self, player, amount):
+        self.current_bid = amount
+        self.high_bidder = player
+        self.sound_fx.play("gavel")
+        self._add_event(f"{player.name} bid ${amount}!")
+
+        # Advance to next active bidder
+        if len(self.active_bidders) > 0:
+            self.bidder_idx = (self.bidder_idx + 1) % len(self.active_bidders)
+
+        self._check_auction_end()
+        self._update_human_buttons()
+
+    def _apply_pass(self, player):
+        self.sound_fx.play("click")
+        self._add_event(f"{player.name} passed / withdrew.")
+        self.passed_bidders.add(player.id)
+
+        if player in self.active_bidders:
+            idx = self.active_bidders.index(player)
+            self.active_bidders.remove(player)
+            if len(self.active_bidders) > 0:
+                self.bidder_idx = idx % len(self.active_bidders)
+            else:
+                self.bidder_idx = 0
+
+        self._check_auction_end()
+        self._update_human_buttons()
+
+    def _check_auction_end(self):
+        # If only 1 bidder remains and they placed a bid -> Winner!
+        if len(self.active_bidders) == 1 and self.high_bidder is not None:
+            self._conclude_auction(winner=self.high_bidder, winning_bid=self.current_bid)
+        # If 0 bidders remain -> Finished!
+        elif len(self.active_bidders) == 0:
+            self._conclude_auction(winner=self.high_bidder, winning_bid=self.current_bid)
+
+    def _conclude_auction(self, winner, winning_bid):
+        self.state = "FINISHED"
+        self.winner = winner
+        self.winning_bid = winning_bid
+        if winner:
+            self.sound_fx.play("buy")
+            self._add_event(f"Sold to {winner.name} for ${winning_bid}!")
+        else:
+            self._add_event("Unsold. No bids placed.")
+
+    def _add_event(self, text):
+        self.recent_events.append(text)
+        if len(self.recent_events) > 5:
+            self.recent_events.pop(0)
+
+    def update(self):
+        if self.state == "FINISHED":
+            if self.all_ai:
+                self.auto_close_timer += 1
+                limit = 10 if self.fast_ai else 35
+                if self.auto_close_timer >= limit:
+                    self.finish()
+            return
+
+        self._check_auction_end()
+        if self.state == "FINISHED":
+            return
+
+        # Process AI Turn
+        if len(self.active_bidders) > 0:
+            current = self.active_bidders[self.bidder_idx]
+            if current.is_ai:
+                self.ai_timer += 1
+                limit = 6 if self.fast_ai else 25
+                if self.ai_timer >= limit:
+                    self.ai_timer = 0
+                    self._process_ai_bid(current)
+
+    def _process_ai_bid(self, ai_player):
+        bid = self.ai_engine.evaluate_auction_bid(
+            ai_player, self.tile, self.current_bid, self.all_tiles, self.players
+        )
+        if bid and bid > self.current_bid and bid <= ai_player.cash:
+            self._apply_bid(ai_player, bid)
+        else:
+            self._apply_pass(ai_player)
+
+    def handle_event(self, event):
+        if self.state == "FINISHED":
+            if self.btn_continue.handle_event(event):
+                return True
+            return False
+
+        current = self.active_bidders[self.bidder_idx] if len(self.active_bidders) > 0 else None
+        if current and not current.is_ai:
+            if self.btn_bid_10.handle_event(event):
+                return True
+            if self.btn_bid_25.handle_event(event):
+                return True
+            if self.btn_bid_50.handle_event(event):
+                return True
+            if self.btn_bid_100.handle_event(event):
+                return True
+            if self.btn_pass.handle_event(event):
+                return True
+        return False
+
+    def finish(self):
+        if self.on_complete:
+            self.on_complete(self.winner, self.winning_bid)
+
+    def draw(self, surface):
+        # Dark overlay
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        surface.blit(overlay, (0, 0))
+
+        # Modal window frame
+        pygame.draw.rect(surface, (24, 33, 53), self.rect, border_radius=12)
+        pygame.draw.rect(surface, (51, 65, 85), self.rect, width=2, border_radius=12)
+
+        # Title bar
+        t_surf = self.title_font.render("PROPERTY AUCTION", True, COLOR_TEXT_GOLD)
+        surface.blit(t_surf, t_surf.get_rect(center=(self.rect.centerx, self.y + 24)))
+
+        # Subtitle
+        sub_str = f"Open Bidding for {self.tile.name}  |  List Price: ${self.tile.price}"
+        sub_surf = self.font.render(sub_str, True, COLOR_TEXT_MUTED)
+        surface.blit(sub_surf, sub_surf.get_rect(center=(self.rect.centerx, self.y + 46)))
+
+        # 1. Left Column: Deed Card preview
+        self.deed_view.draw(surface, self.tile, self.x + 24, self.y + 64, width=255, height=340)
+
+        # Informational rules banner below deed
+        info_rect = pygame.Rect(self.x + 24, self.y + 418, 255, 80)
+        pygame.draw.rect(surface, (18, 25, 40), info_rect, border_radius=8)
+        pygame.draw.rect(surface, (40, 53, 76), info_rect, width=1, border_radius=8)
+        lbl_info1 = self.bold_font.render("AUCTION RULES", True, COLOR_TEXT_GOLD)
+        lbl_info2 = self.font.render("Highest bidder pays Bank & wins deed.", True, COLOR_TEXT_WHITE)
+        lbl_info3 = self.font.render("Passing withdraws you from bidding.", True, COLOR_TEXT_MUTED)
+        surface.blit(lbl_info1, (info_rect.x + 10, info_rect.y + 8))
+        surface.blit(lbl_info2, (info_rect.x + 10, info_rect.y + 30))
+        surface.blit(lbl_info3, (info_rect.x + 10, info_rect.y + 50))
+
+        # 2. Right Column
+        rx = self.x + 295
+        rw = self.w - 315
+
+        # Current High Bid Box
+        bid_box = pygame.Rect(rx, self.y + 64, rw, 85)
+        pygame.draw.rect(surface, (30, 41, 59), bid_box, border_radius=8)
+        pygame.draw.rect(surface, (51, 65, 85), bid_box, width=1, border_radius=8)
+
+        lbl_high = self.font.render("CURRENT HIGH BID", True, COLOR_TEXT_MUTED)
+        surface.blit(lbl_high, (bid_box.x + 16, bid_box.y + 12))
+
+        val_str = f"${self.current_bid}" if self.current_bid > 0 else "$0 (No Bids)"
+        val_surf = self.title_font.render(val_str, True, COLOR_TEXT_GOLD)
+        surface.blit(val_surf, (bid_box.x + 16, bid_box.y + 34))
+
+        if self.high_bidder:
+            lead_tag = f"Leader: {self.high_bidder.name}"
+            pygame.draw.circle(surface, self.high_bidder.color, (bid_box.right - 180, bid_box.centery), 7)
+            lead_surf = self.bold_font.render(lead_tag, True, COLOR_TEXT_WHITE)
+            surface.blit(lead_surf, (bid_box.right - 165, bid_box.centery - 8))
+        else:
+            no_bid_surf = self.font.render("Minimum Opening Bid: $10", True, COLOR_TEXT_AMBER)
+            surface.blit(no_bid_surf, (bid_box.right - 190, bid_box.centery - 8))
+
+        # Participants List Table
+        part_box = pygame.Rect(rx, self.y + 158, rw, 172)
+        pygame.draw.rect(surface, (20, 27, 45), part_box, border_radius=8)
+        pygame.draw.rect(surface, (40, 53, 76), part_box, width=1, border_radius=8)
+
+        hdr_p = self.bold_font.render(f"PARTICIPANTS ({len(self.active_bidders)} Active)", True, COLOR_TEXT_GOLD)
+        surface.blit(hdr_p, (part_box.x + 12, part_box.y + 8))
+        pygame.draw.line(surface, (40, 53, 76), (part_box.x + 8, part_box.y + 28), (part_box.right - 8, part_box.y + 28), 1)
+
+        row_y = part_box.y + 34
+        row_h = 22
+        for p in self.players:
+            pygame.draw.circle(surface, p.color, (part_box.x + 20, row_y + 10), 6)
+            p_text = f"{p.name}  (${p.cash})"
+            p_surf = self.font.render(p_text, True, COLOR_TEXT_WHITE)
+            surface.blit(p_surf, (part_box.x + 34, row_y + 2))
+
+            if self.high_bidder and p.id == self.high_bidder.id:
+                badge_str = "LEADING"
+                badge_col = COLOR_TEXT_GOLD
+            elif self.state == "BIDDING" and len(self.active_bidders) > 0 and p.id == self.active_bidders[self.bidder_idx].id:
+                badge_str = "YOUR TURN" if not p.is_ai else "BIDDING..."
+                badge_col = COLOR_TEXT_GREEN
+            elif p.id in self.passed_bidders:
+                badge_str = "WITHDRAWN"
+                badge_col = COLOR_TEXT_MUTED
+            elif p.is_bankrupt:
+                badge_str = "BANKRUPT"
+                badge_col = COLOR_TEXT_RED
+            else:
+                badge_str = "IN AUCTION"
+                badge_col = (96, 165, 250)
+
+            badge_surf = self.bold_font.render(badge_str, True, badge_col)
+            surface.blit(badge_surf, (part_box.right - 130, row_y + 2))
+
+            row_y += row_h
+
+        # Action / Controls Area
+        ctrl_box = pygame.Rect(rx, self.y + 338, rw, 160)
+        pygame.draw.rect(surface, (20, 27, 45), ctrl_box, border_radius=8)
+        pygame.draw.rect(surface, (40, 53, 76), ctrl_box, width=1, border_radius=8)
+
+        if self.state == "FINISHED":
+            if self.winner:
+                win_text = f"SOLD TO {self.winner.name.upper()} FOR ${self.winning_bid}!"
+                win_col = COLOR_TEXT_GREEN
+            else:
+                win_text = "AUCTION CONCLUDED - NO BIDS PLACED (UNSOLD)"
+                win_col = COLOR_TEXT_MUTED
+            w_surf = self.bold_font.render(win_text, True, win_col)
+            surface.blit(w_surf, w_surf.get_rect(center=(ctrl_box.centerx, ctrl_box.y + 30)))
+            self.btn_continue.draw(surface)
+
+        else:
+            current = self.active_bidders[self.bidder_idx] if len(self.active_bidders) > 0 else None
+            if current and not current.is_ai:
+                prompt_surf = self.bold_font.render("YOUR TURN TO BID OR WITHDRAW:", True, COLOR_TEXT_GOLD)
+                surface.blit(prompt_surf, (ctrl_box.x + 12, ctrl_box.y + 12))
+
+                self.btn_bid_10.draw(surface)
+                self.btn_bid_25.draw(surface)
+                self.btn_bid_50.draw(surface)
+                self.btn_bid_100.draw(surface)
+                self.btn_pass.draw(surface)
+
+                nxt_val = 10 if self.current_bid == 0 else self.current_bid + 10
+                nxt_str = f"Min next bid: ${nxt_val}"
+                nxt_surf = self.font.render(nxt_str, True, COLOR_TEXT_MUTED)
+                surface.blit(nxt_surf, (ctrl_box.x + 200, self.btn_pass.rect.centery - 7))
+
+            elif current:
+                ai_prompt = f"Waiting for {current.name} to evaluate bid..."
+                ai_surf = self.font.render(ai_prompt, True, COLOR_TEXT_MUTED)
+                surface.blit(ai_surf, (ctrl_box.x + 16, ctrl_box.y + 25))
+
+                bar_rect = pygame.Rect(ctrl_box.x + 16, ctrl_box.y + 60, rw - 32, 12)
+                pygame.draw.rect(surface, (30, 41, 59), bar_rect, border_radius=6)
+                limit = 6 if self.fast_ai else 25
+                progress = min(1.0, self.ai_timer / max(1, limit))
+                prog_w = int((rw - 32) * progress)
+                if prog_w > 0:
+                    prog_rect = pygame.Rect(bar_rect.x, bar_rect.y, prog_w, 12)
+                    pygame.draw.rect(surface, COLOR_ACCENT_BLUE, prog_rect, border_radius=6)
 
 
 class CardModal:
@@ -545,7 +953,9 @@ class MortgageModal:
         max_scroll = self._get_max_scroll()
 
         if event.type == pygame.MOUSEWHEEL:
-            if self.rect.collidepoint(pygame.mouse.get_pos()):
+            mpos = getattr(event, 'pos', None) or pygame.mouse.get_pos()
+            is_dummy = (os.environ.get("SDL_VIDEODRIVER") == "dummy")
+            if self.rect.collidepoint(mpos) or (is_dummy and mpos == (0, 0)):
                 if max_scroll > 0:
                     self.scroll_y = max(0, min(max_scroll, self.scroll_y - event.y * 38))
                     self._update_button_positions()
@@ -827,11 +1237,12 @@ class TradeModal:
         max_o_scroll = self._get_opp_max_scroll()
 
         if event.type == pygame.MOUSEWHEEL:
-            mpos = pygame.mouse.get_pos()
-            if self.human_list_rect.collidepoint(mpos) and max_h_scroll > 0:
+            mpos = getattr(event, 'pos', None) or pygame.mouse.get_pos()
+            is_dummy = (os.environ.get("SDL_VIDEODRIVER") == "dummy")
+            if (self.human_list_rect.collidepoint(mpos) or (is_dummy and mpos == (0, 0))) and max_h_scroll > 0:
                 self.human_scroll = max(0, min(max_h_scroll, self.human_scroll - event.y * 28))
                 return True
-            elif self.opp_list_rect.collidepoint(mpos) and max_o_scroll > 0:
+            elif (self.opp_list_rect.collidepoint(mpos) or (is_dummy and mpos == (0, 0))) and max_o_scroll > 0:
                 self.opp_scroll = max(0, min(max_o_scroll, self.opp_scroll - event.y * 28))
                 return True
 

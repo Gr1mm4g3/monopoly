@@ -16,12 +16,13 @@ A modern, urban-themed Monopoly clone built in Python with Pygame. Play games ag
   - **Dealmaker**: Shrewd negotiator focused on completing color monopolies through trades.
   - **Balanced**: Well-rounded investor with steady growth.
 - **Interactive Mechanics**:
+  - **Property Auctions**: Unowned properties declined at printed price immediately go to open auction! All active players participate in turn-based round-robin bidding with quick bid buttons (+$10, +$25, +$50, +$100), AI tactical bidding with monopoly completion bonuses, and gavel audio effects.
   - **Trading**: Propose custom trades (properties + cash) with real-time AI evaluation and realistic counter-reasoning.
   - **Property Development**: Build houses (1-4) and skyscrapers (level 5) with even-building rule enforcement.
   - **Mortgage Management**: Mortgage properties for 50% value or unmortgage with 10% interest.
   - **Detention (Jail)**: 3 options to get out (roll doubles, pay $50, or use a Get Out of Jail Free card). Speeding penalties (3 consecutive doubles).
   - **Fortune & City Chest Decks**: Full 24-card card system with dividend payouts, repairs, grants, detentions, and movement.
-- **Procedural Sound Synthesizer**: Zero external audio files required! Clean synthesized audio effects for dice rolls, cash registers, rent payments, card flips, jail clangs, and victory fanfares.
+- **Procedural Sound Synthesizer**: Zero external audio files required! Clean synthesized audio effects for dice rolls, cash registers, rent payments, card flips, jail clangs, wooden gavel taps, and victory fanfares.
 - **Save & Resume**: Save match progress anytime to JSON and resume later.
 - **Game Speed & Audio Toggles**: Switch between 1x and 3x game animation speed and mute/unmute audio on the fly.
 
@@ -46,6 +47,7 @@ Activate the virtual environment and run `main.py`:
 
 ### 3. Controls & Gameplay
 - **Roll Dice**: Rolls two 3D animated dice. Rolling doubles gives you an extra roll!
+- **Buy / Auction**: When landing on an unowned property, purchase it at list price or send it to open auction to bid against other players!
 - **End Turn**: Passes turn to the next player.
 - **Build**: Opens the development window to upgrade color monopolies.
 - **Trade**: Opens the negotiation modal to propose trades with other players.
@@ -64,14 +66,16 @@ Activate the virtual environment and run `main.py`:
 ├── board.py             # Board layout, tile rects, rent logic, rendering
 ├── player.py            # Player state, token shapes, financial metrics
 ├── cards.py             # Fortune and City Chest decks & card effects
-├── ai.py                # AI decision engine (purchases, buildings, trades)
+├── ai.py                # AI decision engine (purchases, buildings, trades, auctions)
 ├── sound.py             # Procedural sound synthesizer using pygame.mixer
 ├── ui.py                # UI widgets (Buttons, EventLog, Panels, DeedCards)
-├── modals.py            # Modals (Buy Property, Cards, Trade, Build, Mortgage)
+├── modals.py            # Modals (Buy Property, Auction, Cards, Trade, Build, Mortgage)
 ├── save_manager.py      # Save & load serialization to JSON
 ├── screenshots/         # Captured screenshots of the game
 ├── tests/
 │   ├── test_game.py     # Unit test suite (rules, rent, AI, cards, save)
+│   ├── test_auction.py  # Auction test suite (bidding flow, AI valuation, monopolies)
+│   ├── test_modal_scrolling.py # Modal viewport & interaction tests
 │   └── test_render.py   # Headless screenshot verification script
 └── requirements.txt     # Python dependencies
 ```
