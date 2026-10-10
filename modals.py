@@ -148,7 +148,7 @@ class CardModal:
 
 
 class BuildModal:
-    """Modal for managing house and skyscraper development."""
+    """Modal for managing house and skyscraper development with scrollable property list."""
     def __init__(self, player, tiles, font, title_font, on_close, on_build_callback, on_sell_callback):
         self.player = player
         self.tiles = tiles
@@ -158,52 +158,78 @@ class BuildModal:
         self.on_build_callback = on_build_callback
         self.on_sell_callback = on_sell_callback
 
-        self.w = 580
-        self.h = 480
+        self.w = 660
+        self.h = 550
         self.x = (SCREEN_WIDTH - self.w) // 2
         self.y = (SCREEN_HEIGHT - self.h) // 2
         self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
 
         self.btn_close = Button(
-            (self.rect.centerx - 60, self.y + self.h - 50, 120, 38),
+            (self.rect.centerx - 65, self.y + self.h - 48, 130, 36),
             "Done",
             font,
             bg_color=COLOR_ACCENT_BLUE,
             callback=on_close
         )
+
+        # Scroll viewport geometry
+        self.content_rect = pygame.Rect(self.x + 16, self.y + 75, self.w - 32, self.h - 135)
+        self.row_height = 42
+        self.scroll_y = 0
+        self.is_dragging_scrollbar = False
+        self.drag_start_y = 0
+        self.drag_start_scroll = 0
+
         self._refresh_action_buttons()
 
+    def _get_max_scroll(self):
+        total_h = len(self.build_items) * self.row_height
+        return max(0, total_h - self.content_rect.height)
+
+    def _update_button_positions(self):
+        max_scroll = self._get_max_scroll()
+        self.scroll_y = max(0, min(self.scroll_y, max_scroll))
+        for i, item in enumerate(self.build_items):
+            row_y = self.content_rect.top + i * self.row_height - self.scroll_y
+            item["row_y"] = row_y
+            item["b_btn"].rect.x = self.content_rect.right - 185
+            item["b_btn"].rect.y = row_y + 7
+            item["s_btn"].rect.x = self.content_rect.right - 100
+            item["s_btn"].rect.y = row_y + 7
+
     def _refresh_action_buttons(self):
-        self.build_buttons = []
-        # Find eligible properties
-        cy = self.y + 70
+        self.build_items = []
         for tid in self.player.properties:
             tile = self.tiles[tid]
             if tile.type == "PROPERTY" and self.player.owns_group(tile.group, self.tiles):
-                # Build button
                 can_build = self.player.can_build_on(tile, self.tiles) and (self.player.cash >= tile.house_cost)
                 b_btn = Button(
-                    (self.x + 380, cy, 75, 28),
-                    f"+Build",
+                    (0, 0, 75, 28),
+                    "+Build",
                     self.font,
-                    bg_color=COLOR_ACCENT_GREEN if can_afford(tile, self.player) else (51, 65, 85),
+                    bg_color=COLOR_ACCENT_GREEN if can_build else (51, 65, 85),
                     disabled=not can_build,
                     border_radius=4,
                     callback=lambda t=tile: self._handle_build(t)
                 )
-                # Sell button
                 can_sell = self.player.can_sell_building(tile, self.tiles)
                 s_btn = Button(
-                    (self.x + 465, cy, 75, 28),
-                    f"-Sell",
+                    (0, 0, 75, 28),
+                    "-Sell",
                     self.font,
                     bg_color=COLOR_ACCENT_RED if can_sell else (51, 65, 85),
                     disabled=not can_sell,
                     border_radius=4,
                     callback=lambda t=tile: self._handle_sell(t)
                 )
-                self.build_buttons.append((tile, b_btn, s_btn, cy))
-                cy += 38
+                self.build_items.append({
+                    "tile": tile,
+                    "b_btn": b_btn,
+                    "s_btn": s_btn,
+                    "row_y": 0
+                })
+
+        self._update_button_positions()
 
     def _handle_build(self, tile):
         self.on_build_callback(tile)
@@ -216,11 +242,83 @@ class BuildModal:
     def handle_event(self, event):
         if self.btn_close.handle_event(event):
             return True
-        for tile, b_btn, s_btn, cy in self.build_buttons:
-            if b_btn.handle_event(event):
+
+        max_scroll = self._get_max_scroll()
+
+        if event.type == pygame.MOUSEWHEEL:
+            if self.rect.collidepoint(pygame.mouse.get_pos()):
+                if max_scroll > 0:
+                    self.scroll_y = max(0, min(max_scroll, self.scroll_y - event.y * 38))
+                    self._update_button_positions()
+                    return True
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 4 and self.rect.collidepoint(event.pos):
+                if max_scroll > 0:
+                    self.scroll_y = max(0, self.scroll_y - 38)
+                    self._update_button_positions()
+                    return True
+            elif event.button == 5 and self.rect.collidepoint(event.pos):
+                if max_scroll > 0:
+                    self.scroll_y = min(max_scroll, self.scroll_y + 38)
+                    self._update_button_positions()
+                    return True
+            elif event.button == 1:
+                # Scrollbar track click or drag
+                if max_scroll > 0:
+                    sb_x = self.content_rect.right - 12
+                    sb_track = pygame.Rect(sb_x, self.content_rect.top, 10, self.content_rect.height)
+                    thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.build_items) * self.row_height))))
+                    thumb_travel = self.content_rect.height - thumb_h
+                    thumb_y = self.content_rect.top + int((self.scroll_y / max_scroll) * thumb_travel)
+                    thumb_rect = pygame.Rect(sb_x - 1, thumb_y, 12, thumb_h)
+
+                    if thumb_rect.collidepoint(event.pos):
+                        self.is_dragging_scrollbar = True
+                        self.drag_start_y = event.pos[1]
+                        self.drag_start_scroll = self.scroll_y
+                        return True
+                    elif sb_track.collidepoint(event.pos):
+                        if event.pos[1] < thumb_y:
+                            self.scroll_y = max(0, self.scroll_y - self.content_rect.height)
+                        else:
+                            self.scroll_y = min(max_scroll, self.scroll_y + self.content_rect.height)
+                        self._update_button_positions()
+                        return True
+
+                # Content item clicks
+                if self.content_rect.collidepoint(event.pos):
+                    for item in self.build_items:
+                        if self.content_rect.top - self.row_height <= item["row_y"] <= self.content_rect.bottom:
+                            if item["b_btn"].handle_event(event):
+                                return True
+                            if item["s_btn"].handle_event(event):
+                                return True
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self.is_dragging_scrollbar = False
+
+        elif event.type == pygame.MOUSEMOTION:
+            if self.is_dragging_scrollbar and max_scroll > 0:
+                dy = event.pos[1] - self.drag_start_y
+                thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.build_items) * self.row_height))))
+                thumb_travel = self.content_rect.height - thumb_h
+                if thumb_travel > 0:
+                    delta_scroll = (dy / thumb_travel) * max_scroll
+                    self.scroll_y = max(0, min(max_scroll, self.drag_start_scroll + delta_scroll))
+                    self._update_button_positions()
                 return True
-            if s_btn.handle_event(event):
-                return True
+
+            if self.content_rect.collidepoint(event.pos):
+                for item in self.build_items:
+                    if self.content_rect.top - self.row_height <= item["row_y"] <= self.content_rect.bottom:
+                        item["b_btn"].handle_event(event)
+                        item["s_btn"].handle_event(event)
+            else:
+                for item in self.build_items:
+                    item["b_btn"].is_hovered = False
+                    item["s_btn"].is_hovered = False
+
         return False
 
     def draw(self, surface):
@@ -228,48 +326,77 @@ class BuildModal:
         overlay.fill((0, 0, 0, 160))
         surface.blit(overlay, (0, 0))
 
+        # Modal Background
         pygame.draw.rect(surface, (24, 33, 53), self.rect, border_radius=12)
         pygame.draw.rect(surface, (51, 65, 85), self.rect, width=2, border_radius=12)
 
-        # Header
+        # Header (Fixed)
         t_surf = self.title_font.render("PROPERTY DEVELOPMENT & EXPANSION", True, COLOR_TEXT_GOLD)
-        surface.blit(t_surf, t_surf.get_rect(center=(self.rect.centerx, self.y + 26)))
+        surface.blit(t_surf, t_surf.get_rect(center=(self.rect.centerx, self.y + 24)))
 
         sub = self.font.render(f"Available Cash: ${self.player.cash:,}", True, COLOR_TEXT_GREEN)
-        surface.blit(sub, (self.x + 30, self.y + 46))
+        surface.blit(sub, (self.x + 30, self.y + 48))
 
-        if not self.build_buttons:
+        if not self.build_items:
             no_mono = self.font.render("You do not own any complete color monopolies yet.", True, COLOR_TEXT_MUTED)
             surface.blit(no_mono, no_mono.get_rect(center=(self.rect.centerx, self.rect.centery)))
         else:
-            for tile, b_btn, s_btn, cy in self.build_buttons:
-                # District color pill
+            # Viewport background
+            pygame.draw.rect(surface, (18, 25, 41), self.content_rect, border_radius=8)
+            pygame.draw.rect(surface, (40, 53, 76), self.content_rect, width=1, border_radius=8)
+
+            old_clip = surface.get_clip()
+            surface.set_clip(self.content_rect)
+
+            for item in self.build_items:
+                row_y = item["row_y"]
+                if row_y + self.row_height < self.content_rect.top or row_y > self.content_rect.bottom:
+                    continue
+
+                tile = item["tile"]
+                row_rect = pygame.Rect(self.content_rect.left + 6, row_y + 2, self.content_rect.width - 24, self.row_height - 4)
+                pygame.draw.rect(surface, (27, 38, 59), row_rect, border_radius=6)
+
+                # District color circle
                 col = DISTRICT_COLORS.get(tile.group, (71, 85, 105))
-                pygame.draw.circle(surface, col, (self.x + 38, cy + 14), 7)
-                
+                pygame.draw.circle(surface, col, (self.content_rect.left + 22, row_y + 20), 7)
+
                 # Property name
                 n_surf = self.font.render(tile.name, True, COLOR_TEXT_WHITE)
-                surface.blit(n_surf, (self.x + 55, cy + 4))
+                surface.blit(n_surf, (self.content_rect.left + 38, row_y + 11))
 
                 # Development status
                 dev_str = f"{tile.houses} Houses" if tile.houses < 5 else "Skyscraper"
                 if tile.houses == 0:
                     dev_str = "No Buildings"
                 d_surf = self.font.render(f"{dev_str} (${tile.house_cost}/h)", True, COLOR_TEXT_MUTED)
-                surface.blit(d_surf, (self.x + 220, cy + 4))
+                surface.blit(d_surf, (self.content_rect.left + 230, row_y + 11))
 
-                b_btn.draw(surface)
-                s_btn.draw(surface)
+                item["b_btn"].draw(surface)
+                item["s_btn"].draw(surface)
 
+            surface.set_clip(old_clip)
+
+            # Scrollbar
+            max_scroll = self._get_max_scroll()
+            if max_scroll > 0:
+                sb_x = self.content_rect.right - 10
+                sb_track = pygame.Rect(sb_x, self.content_rect.top + 4, 6, self.content_rect.height - 8)
+                pygame.draw.rect(surface, (30, 41, 59), sb_track, border_radius=3)
+
+                thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.build_items) * self.row_height))))
+                thumb_travel = (self.content_rect.height - 8) - thumb_h
+                thumb_y = self.content_rect.top + 4 + int((self.scroll_y / max_scroll) * thumb_travel)
+                thumb_rect = pygame.Rect(sb_x - 1, thumb_y, 8, thumb_h)
+                thumb_col = (148, 163, 184) if self.is_dragging_scrollbar else (100, 116, 139)
+                pygame.draw.rect(surface, thumb_col, thumb_rect, border_radius=4)
+
+        # Fixed Bottom Bar
         self.btn_close.draw(surface)
 
 
-def can_afford(tile, player):
-    return player.cash >= tile.house_cost
-
-
 class MortgageModal:
-    """Modal for managing mortgages (raise 50% cash, pay 55% to unmortgage) and debt liquidation."""
+    """Modal for managing mortgages (raise 50% cash, pay 55% to unmortgage) and debt liquidation with scrollable list."""
     def __init__(self, player, tiles, font, title_font, on_close, on_toggle_callback,
                  debt_amount=0, creditor=None, on_pay_debt=None, on_declare_bankruptcy=None,
                  on_sell_house=None):
@@ -285,31 +412,50 @@ class MortgageModal:
         self.on_declare_bankruptcy = on_declare_bankruptcy
         self.on_sell_house = on_sell_house
 
-        self.w = 640 if debt_amount > 0 else 580
-        self.h = 520 if debt_amount > 0 else 480
+        self.w = 680
+        self.h = 560
         self.x = (SCREEN_WIDTH - self.w) // 2
         self.y = (SCREEN_HEIGHT - self.h) // 2
         self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
 
+        # Viewport geometry
+        top_offset = 80 if self.debt_amount > 0 else 75
+        self.content_rect = pygame.Rect(self.x + 16, self.y + top_offset, self.w - 32, self.h - top_offset - 65)
+        self.row_height = 42
+        self.scroll_y = 0
+        self.is_dragging_scrollbar = False
+        self.drag_start_y = 0
+        self.drag_start_scroll = 0
+
         self._refresh_buttons()
 
+    def _get_max_scroll(self):
+        total_h = len(self.prop_items) * self.row_height
+        return max(0, total_h - self.content_rect.height)
+
+    def _update_button_positions(self):
+        max_scroll = self._get_max_scroll()
+        self.scroll_y = max(0, min(self.scroll_y, max_scroll))
+        for i, item in enumerate(self.prop_items):
+            row_y = self.content_rect.top + i * self.row_height - self.scroll_y
+            item["row_y"] = row_y
+            item["btn"].rect.x = self.content_rect.right - 185
+            item["btn"].rect.y = row_y + 7
+
     def _refresh_buttons(self):
-        self.prop_buttons = []
-        cy = self.y + (80 if self.debt_amount > 0 else 70)
+        self.prop_items = []
 
         for tid in self.player.properties:
             tile = self.tiles[tid]
-            # Cannot mortgage if any houses on properties in this color group
             has_buildings_in_group = False
             if tile.type == "PROPERTY":
                 group_tiles = [t for t in self.tiles if getattr(t, 'group', None) == tile.group]
                 has_buildings_in_group = any(t.houses > 0 for t in group_tiles)
 
-            btn_x = self.x + self.w - 175
             if getattr(tile, 'houses', 0) > 0:
                 refund = tile.house_cost // 2
                 btn = Button(
-                    (btn_x, cy, 155, 28),
+                    (0, 0, 165, 28),
                     f"Sell House (+${refund})",
                     self.font,
                     bg_color=(217, 119, 6),
@@ -320,7 +466,7 @@ class MortgageModal:
                 unmortgage_cost = int(tile.mortgage_value * 1.1)
                 can_unmort = self.player.cash >= unmortgage_cost and (self.debt_amount == 0 or (self.player.cash - unmortgage_cost >= self.debt_amount))
                 btn = Button(
-                    (btn_x, cy, 155, 28),
+                    (0, 0, 165, 28),
                     f"Unmortgage (${unmortgage_cost})",
                     self.font,
                     bg_color=COLOR_ACCENT_GREEN if can_unmort else (51, 65, 85),
@@ -331,7 +477,7 @@ class MortgageModal:
             else:
                 can_mort = not has_buildings_in_group
                 btn = Button(
-                    (btn_x, cy, 155, 28),
+                    (0, 0, 165, 28),
                     f"Mortgage (+${tile.mortgage_value})",
                     self.font,
                     bg_color=COLOR_ACCENT_RED if can_mort else (51, 65, 85),
@@ -340,10 +486,9 @@ class MortgageModal:
                     callback=lambda t=tile: self._handle_toggle(t)
                 )
 
-            self.prop_buttons.append((tile, btn, cy))
-            cy += 36
+            self.prop_items.append({"tile": tile, "btn": btn, "row_y": 0})
 
-        # Bottom action buttons
+        # Bottom action buttons (Fixed)
         if self.debt_amount > 0:
             can_pay = self.player.cash >= self.debt_amount
             pay_label = f"Pay Debt (${self.debt_amount:,})" if can_pay else f"Need ${self.debt_amount - self.player.cash:,} More"
@@ -367,7 +512,7 @@ class MortgageModal:
             self.btn_close = None
         else:
             self.btn_close = Button(
-                (self.rect.centerx - 60, self.y + self.h - 50, 120, 38),
+                (self.rect.centerx - 65, self.y + self.h - 50, 130, 38),
                 "Done",
                 self.font,
                 bg_color=COLOR_ACCENT_BLUE,
@@ -375,6 +520,8 @@ class MortgageModal:
             )
             self.btn_pay = None
             self.btn_bankrupt = None
+
+        self._update_button_positions()
 
     def _handle_sell_house(self, tile):
         if self.on_sell_house:
@@ -395,9 +542,78 @@ class MortgageModal:
             if self.btn_close and self.btn_close.handle_event(event):
                 return True
 
-        for tile, btn, cy in self.prop_buttons:
-            if btn.handle_event(event):
+        max_scroll = self._get_max_scroll()
+
+        if event.type == pygame.MOUSEWHEEL:
+            if self.rect.collidepoint(pygame.mouse.get_pos()):
+                if max_scroll > 0:
+                    self.scroll_y = max(0, min(max_scroll, self.scroll_y - event.y * 38))
+                    self._update_button_positions()
+                    return True
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 4 and self.rect.collidepoint(event.pos):
+                if max_scroll > 0:
+                    self.scroll_y = max(0, self.scroll_y - 38)
+                    self._update_button_positions()
+                    return True
+            elif event.button == 5 and self.rect.collidepoint(event.pos):
+                if max_scroll > 0:
+                    self.scroll_y = min(max_scroll, self.scroll_y + 38)
+                    self._update_button_positions()
+                    return True
+            elif event.button == 1:
+                # Scrollbar track click or drag
+                if max_scroll > 0:
+                    sb_x = self.content_rect.right - 12
+                    sb_track = pygame.Rect(sb_x, self.content_rect.top, 10, self.content_rect.height)
+                    thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.prop_items) * self.row_height))))
+                    thumb_travel = self.content_rect.height - thumb_h
+                    thumb_y = self.content_rect.top + int((self.scroll_y / max_scroll) * thumb_travel)
+                    thumb_rect = pygame.Rect(sb_x - 1, thumb_y, 12, thumb_h)
+
+                    if thumb_rect.collidepoint(event.pos):
+                        self.is_dragging_scrollbar = True
+                        self.drag_start_y = event.pos[1]
+                        self.drag_start_scroll = self.scroll_y
+                        return True
+                    elif sb_track.collidepoint(event.pos):
+                        if event.pos[1] < thumb_y:
+                            self.scroll_y = max(0, self.scroll_y - self.content_rect.height)
+                        else:
+                            self.scroll_y = min(max_scroll, self.scroll_y + self.content_rect.height)
+                        self._update_button_positions()
+                        return True
+
+                # Content item button click
+                if self.content_rect.collidepoint(event.pos):
+                    for item in self.prop_items:
+                        if self.content_rect.top - self.row_height <= item["row_y"] <= self.content_rect.bottom:
+                            if item["btn"].handle_event(event):
+                                return True
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            self.is_dragging_scrollbar = False
+
+        elif event.type == pygame.MOUSEMOTION:
+            if self.is_dragging_scrollbar and max_scroll > 0:
+                dy = event.pos[1] - self.drag_start_y
+                thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.prop_items) * self.row_height))))
+                thumb_travel = self.content_rect.height - thumb_h
+                if thumb_travel > 0:
+                    delta_scroll = (dy / thumb_travel) * max_scroll
+                    self.scroll_y = max(0, min(max_scroll, self.drag_start_scroll + delta_scroll))
+                    self._update_button_positions()
                 return True
+
+            if self.content_rect.collidepoint(event.pos):
+                for item in self.prop_items:
+                    if self.content_rect.top - self.row_height <= item["row_y"] <= self.content_rect.bottom:
+                        item["btn"].handle_event(event)
+            else:
+                for item in self.prop_items:
+                    item["btn"].is_hovered = False
+
         return False
 
     def draw(self, surface):
@@ -405,10 +621,12 @@ class MortgageModal:
         overlay.fill((0, 0, 0, 160))
         surface.blit(overlay, (0, 0))
 
+        # Modal Frame
         pygame.draw.rect(surface, (24, 33, 53), self.rect, border_radius=12)
         border_col = COLOR_TEXT_RED if self.debt_amount > 0 else (51, 65, 85)
         pygame.draw.rect(surface, border_col, self.rect, width=2, border_radius=12)
 
+        # Header (Fixed)
         if self.debt_amount > 0:
             t_surf = self.title_font.render("DEBT SETTLEMENT & LIQUIDATION", True, COLOR_TEXT_RED)
             surface.blit(t_surf, t_surf.get_rect(center=(self.rect.centerx, self.y + 24)))
@@ -427,17 +645,38 @@ class MortgageModal:
             sub = self.font.render(f"Cash: ${self.player.cash:,}", True, COLOR_TEXT_GREEN)
             surface.blit(sub, (self.x + 30, self.y + 46))
 
-        if not self.prop_buttons:
+            props_info = self.font.render(f"Properties Owned: {len(self.player.properties)}", True, COLOR_TEXT_MUTED)
+            surface.blit(props_info, (self.x + self.w - 210, self.y + 46))
+
+        if not self.prop_items:
             no_props = self.font.render("You do not own any properties.", True, COLOR_TEXT_MUTED)
             surface.blit(no_props, no_props.get_rect(center=(self.rect.centerx, self.rect.centery)))
         else:
-            for tile, btn, cy in self.prop_buttons:
+            # Viewport background
+            pygame.draw.rect(surface, (18, 25, 41), self.content_rect, border_radius=8)
+            pygame.draw.rect(surface, (40, 53, 76), self.content_rect, width=1, border_radius=8)
+
+            old_clip = surface.get_clip()
+            surface.set_clip(self.content_rect)
+
+            for item in self.prop_items:
+                row_y = item["row_y"]
+                if row_y + self.row_height < self.content_rect.top or row_y > self.content_rect.bottom:
+                    continue
+
+                tile = item["tile"]
+                row_rect = pygame.Rect(self.content_rect.left + 6, row_y + 2, self.content_rect.width - 24, self.row_height - 4)
+                pygame.draw.rect(surface, (27, 38, 59), row_rect, border_radius=6)
+
+                # District color circle
                 col = DISTRICT_COLORS.get(tile.group, (71, 85, 105))
-                pygame.draw.circle(surface, col, (self.x + 38, cy + 14), 7)
+                pygame.draw.circle(surface, col, (self.content_rect.left + 22, row_y + 20), 7)
 
+                # Property name
                 n_surf = self.font.render(tile.name, True, COLOR_TEXT_WHITE)
-                surface.blit(n_surf, (self.x + 55, cy + 4))
+                surface.blit(n_surf, (self.content_rect.left + 38, row_y + 11))
 
+                # Status
                 if getattr(tile, 'houses', 0) > 0:
                     status_str = f"{tile.houses} Building{'s' if tile.houses > 1 else ''}"
                     status_col = (251, 191, 36)
@@ -448,10 +687,27 @@ class MortgageModal:
                     status_str = "Active"
                     status_col = COLOR_TEXT_GREEN
                 s_surf = self.font.render(status_str, True, status_col)
-                surface.blit(s_surf, (self.x + 230, cy + 4))
+                surface.blit(s_surf, (self.content_rect.left + 240, row_y + 11))
 
-                btn.draw(surface)
+                item["btn"].draw(surface)
 
+            surface.set_clip(old_clip)
+
+            # Scrollbar
+            max_scroll = self._get_max_scroll()
+            if max_scroll > 0:
+                sb_x = self.content_rect.right - 10
+                sb_track = pygame.Rect(sb_x, self.content_rect.top + 4, 6, self.content_rect.height - 8)
+                pygame.draw.rect(surface, (30, 41, 59), sb_track, border_radius=3)
+
+                thumb_h = max(32, int(self.content_rect.height * (self.content_rect.height / (len(self.prop_items) * self.row_height))))
+                thumb_travel = (self.content_rect.height - 8) - thumb_h
+                thumb_y = self.content_rect.top + 4 + int((self.scroll_y / max_scroll) * thumb_travel)
+                thumb_rect = pygame.Rect(sb_x - 1, thumb_y, 8, thumb_h)
+                thumb_col = (148, 163, 184) if self.is_dragging_scrollbar else (100, 116, 139)
+                pygame.draw.rect(surface, thumb_col, thumb_rect, border_radius=4)
+
+        # Bottom Bar (Fixed)
         if self.debt_amount > 0:
             if self.btn_pay:
                 self.btn_pay.draw(surface)
@@ -489,6 +745,12 @@ class TradeModal:
         self.y = (SCREEN_HEIGHT - self.h) // 2
         self.rect = pygame.Rect(self.x, self.y, self.w, self.h)
 
+        # Scroll viewports for offering and requesting
+        self.human_list_rect = pygame.Rect(self.x + 30, self.y + 115, 290, 236)
+        self.opp_list_rect = pygame.Rect(self.x + 360, self.y + 115, 290, 236)
+        self.human_scroll = 0
+        self.opp_scroll = 0
+
         # Buttons
         self.btn_next_opp = Button(
             (self.x + 440, self.y + 44, 110, 30), "Next Player", font,
@@ -503,12 +765,24 @@ class TradeModal:
             bg_color=(71, 85, 105), callback=on_close
         )
 
+    def _get_human_max_scroll(self):
+        total_h = len(self.human.properties) * 28
+        return max(0, total_h - self.human_list_rect.height)
+
+    def _get_opp_max_scroll(self):
+        opp = self.get_current_opp()
+        if not opp:
+            return 0
+        total_h = len(opp.properties) * 28
+        return max(0, total_h - self.opp_list_rect.height)
+
     def _next_opp(self):
         if self.opponents:
             self.selected_opp_idx = (self.selected_opp_idx + 1) % len(self.opponents)
             self.requested_props.clear()
             self.requested_cash = 0
             self.feedback_msg = ""
+            self.opp_scroll = 0
 
     def get_current_opp(self):
         if not self.opponents:
@@ -548,51 +822,79 @@ class TradeModal:
         if self.btn_cancel.handle_event(event):
             return True
 
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            mx, my = event.pos
-            # Check offering clicks
-            cy = self.y + 130
-            for tid in self.human.properties:
-                item_rect = pygame.Rect(self.x + 30, cy, 280, 24)
-                if item_rect.collidepoint(mx, my):
-                    if tid in self.offered_props:
-                        self.offered_props.remove(tid)
-                    else:
-                        self.offered_props.add(tid)
-                    return True
-                cy += 28
+        opp = self.get_current_opp()
+        max_h_scroll = self._get_human_max_scroll()
+        max_o_scroll = self._get_opp_max_scroll()
 
-            # Check requested clicks
-            opp = self.get_current_opp()
-            if opp:
-                cy = self.y + 130
-                for tid in opp.properties:
-                    item_rect = pygame.Rect(self.x + 360, cy, 280, 24)
-                    if item_rect.collidepoint(mx, my):
-                        if tid in self.requested_props:
-                            self.requested_props.remove(tid)
-                        else:
-                            self.requested_props.add(tid)
+        if event.type == pygame.MOUSEWHEEL:
+            mpos = pygame.mouse.get_pos()
+            if self.human_list_rect.collidepoint(mpos) and max_h_scroll > 0:
+                self.human_scroll = max(0, min(max_h_scroll, self.human_scroll - event.y * 28))
+                return True
+            elif self.opp_list_rect.collidepoint(mpos) and max_o_scroll > 0:
+                self.opp_scroll = max(0, min(max_o_scroll, self.opp_scroll - event.y * 28))
+                return True
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 4:
+                if self.human_list_rect.collidepoint(event.pos) and max_h_scroll > 0:
+                    self.human_scroll = max(0, self.human_scroll - 28)
+                    return True
+                elif self.opp_list_rect.collidepoint(event.pos) and max_o_scroll > 0:
+                    self.opp_scroll = max(0, self.opp_scroll - 28)
+                    return True
+            elif event.button == 5:
+                if self.human_list_rect.collidepoint(event.pos) and max_h_scroll > 0:
+                    self.human_scroll = min(max_h_scroll, self.human_scroll + 28)
+                    return True
+                elif self.opp_list_rect.collidepoint(event.pos) and max_o_scroll > 0:
+                    self.opp_scroll = min(max_o_scroll, self.opp_scroll + 28)
+                    return True
+            elif event.button == 1:
+                mx, my = event.pos
+                # Check offering clicks
+                if self.human_list_rect.collidepoint(mx, my):
+                    for i, tid in enumerate(self.human.properties):
+                        row_y = self.human_list_rect.top + i * 28 - self.human_scroll
+                        if self.human_list_rect.top - 28 <= row_y <= self.human_list_rect.bottom:
+                            item_rect = pygame.Rect(self.human_list_rect.left, row_y, 276, 24)
+                            if item_rect.collidepoint(mx, my):
+                                if tid in self.offered_props:
+                                    self.offered_props.remove(tid)
+                                else:
+                                    self.offered_props.add(tid)
+                                return True
+
+                # Check requested clicks
+                if opp and self.opp_list_rect.collidepoint(mx, my):
+                    for i, tid in enumerate(opp.properties):
+                        row_y = self.opp_list_rect.top + i * 28 - self.opp_scroll
+                        if self.opp_list_rect.top - 28 <= row_y <= self.opp_list_rect.bottom:
+                            item_rect = pygame.Rect(self.opp_list_rect.left, row_y, 276, 24)
+                            if item_rect.collidepoint(mx, my):
+                                if tid in self.requested_props:
+                                    self.requested_props.remove(tid)
+                                else:
+                                    self.requested_props.add(tid)
+                                return True
+
+                # Cash adjustment buttons
+                # Offer +$50 / -$50
+                if pygame.Rect(self.x + 190, self.y + 360, 40, 24).collidepoint(mx, my):
+                    self.offered_cash = min(self.human.cash, self.offered_cash + 50)
+                    return True
+                if pygame.Rect(self.x + 235, self.y + 360, 40, 24).collidepoint(mx, my):
+                    self.offered_cash = max(0, self.offered_cash - 50)
+                    return True
+
+                # Request +$50 / -$50
+                if opp:
+                    if pygame.Rect(self.x + 520, self.y + 360, 40, 24).collidepoint(mx, my):
+                        self.requested_cash = min(opp.cash, self.requested_cash + 50)
                         return True
-                    cy += 28
-
-            # Cash adjustment buttons
-            # Offer +$50 / -$50
-            if pygame.Rect(self.x + 190, self.y + 360, 40, 24).collidepoint(mx, my):
-                self.offered_cash = min(self.human.cash, self.offered_cash + 50)
-                return True
-            if pygame.Rect(self.x + 235, self.y + 360, 40, 24).collidepoint(mx, my):
-                self.offered_cash = max(0, self.offered_cash - 50)
-                return True
-
-            # Request +$50 / -$50
-            if opp:
-                if pygame.Rect(self.x + 520, self.y + 360, 40, 24).collidepoint(mx, my):
-                    self.requested_cash = min(opp.cash, self.requested_cash + 50)
-                    return True
-                if pygame.Rect(self.x + 565, self.y + 360, 40, 24).collidepoint(mx, my):
-                    self.requested_cash = max(0, self.requested_cash - 50)
-                    return True
+                    if pygame.Rect(self.x + 565, self.y + 360, 40, 24).collidepoint(mx, my):
+                        self.requested_cash = max(0, self.requested_cash - 50)
+                        return True
 
         return False
 
@@ -617,21 +919,41 @@ class TradeModal:
         you_lbl = self.font.render("You Offer:", True, COLOR_TEXT_GREEN)
         surface.blit(you_lbl, (self.x + 30, self.y + 90))
 
-        cy = self.y + 120
-        for tid in self.human.properties[:7]: # Show up to 7
-            t = self.tiles[tid]
-            is_sel = tid in self.offered_props
-            bg = (38, 54, 84) if is_sel else (30, 41, 59)
-            r = pygame.Rect(self.x + 30, cy, 280, 24)
-            pygame.draw.rect(surface, bg, r, border_radius=4)
-            if is_sel:
-                pygame.draw.rect(surface, COLOR_TEXT_GOLD, r, width=1, border_radius=4)
-            
-            col = DISTRICT_COLORS.get(t.group, (71, 85, 105))
-            pygame.draw.circle(surface, col, (self.x + 42, cy + 12), 5)
-            n_txt = self.font.render(f"{t.name} (${t.price})", True, COLOR_TEXT_WHITE)
-            surface.blit(n_txt, (self.x + 55, cy + 3))
-            cy += 28
+        old_clip = surface.get_clip()
+        surface.set_clip(self.human_list_rect)
+
+        if not self.human.properties:
+            empty_lbl = self.font.render("No properties owned", True, COLOR_TEXT_MUTED)
+            surface.blit(empty_lbl, (self.human_list_rect.left + 8, self.human_list_rect.top + 8))
+        else:
+            for i, tid in enumerate(self.human.properties):
+                row_y = self.human_list_rect.top + i * 28 - self.human_scroll
+                if row_y + 28 < self.human_list_rect.top or row_y > self.human_list_rect.bottom:
+                    continue
+                t = self.tiles[tid]
+                is_sel = tid in self.offered_props
+                bg = (38, 54, 84) if is_sel else (30, 41, 59)
+                r = pygame.Rect(self.human_list_rect.left, row_y, 276, 24)
+                pygame.draw.rect(surface, bg, r, border_radius=4)
+                if is_sel:
+                    pygame.draw.rect(surface, COLOR_TEXT_GOLD, r, width=1, border_radius=4)
+                
+                col = DISTRICT_COLORS.get(t.group, (71, 85, 105))
+                pygame.draw.circle(surface, col, (self.human_list_rect.left + 12, row_y + 12), 5)
+                n_txt = self.font.render(f"{t.name} (${t.price})", True, COLOR_TEXT_WHITE)
+                surface.blit(n_txt, (self.human_list_rect.left + 24, row_y + 3))
+
+        surface.set_clip(old_clip)
+
+        max_h_scroll = self._get_human_max_scroll()
+        if max_h_scroll > 0:
+            sb_x = self.human_list_rect.right - 6
+            sb_track = pygame.Rect(sb_x, self.human_list_rect.top, 4, self.human_list_rect.height)
+            pygame.draw.rect(surface, (30, 41, 59), sb_track, border_radius=2)
+            thumb_h = max(24, int(self.human_list_rect.height * (self.human_list_rect.height / (len(self.human.properties) * 28))))
+            thumb_travel = self.human_list_rect.height - thumb_h
+            thumb_y = self.human_list_rect.top + int((self.human_scroll / max_h_scroll) * thumb_travel)
+            pygame.draw.rect(surface, (100, 116, 139), pygame.Rect(sb_x - 1, thumb_y, 6, thumb_h), border_radius=3)
 
         # Cash offer controls
         c_offer_lbl = self.font.render(f"Cash Offer: ${self.offered_cash}", True, COLOR_TEXT_GREEN)
@@ -650,21 +972,39 @@ class TradeModal:
         surface.blit(req_lbl, (self.x + 360, self.y + 90))
 
         if opp:
-            cy = self.y + 120
-            for tid in opp.properties[:7]:
-                t = self.tiles[tid]
-                is_sel = tid in self.requested_props
-                bg = (38, 54, 84) if is_sel else (30, 41, 59)
-                r = pygame.Rect(self.x + 360, cy, 280, 24)
-                pygame.draw.rect(surface, bg, r, border_radius=4)
-                if is_sel:
-                    pygame.draw.rect(surface, COLOR_TEXT_GOLD, r, width=1, border_radius=4)
-                
-                col = DISTRICT_COLORS.get(t.group, (71, 85, 105))
-                pygame.draw.circle(surface, col, (self.x + 372, cy + 12), 5)
-                n_txt = self.font.render(f"{t.name} (${t.price})", True, COLOR_TEXT_WHITE)
-                surface.blit(n_txt, (self.x + 385, cy + 3))
-                cy += 28
+            surface.set_clip(self.opp_list_rect)
+            if not opp.properties:
+                empty_lbl = self.font.render("No properties owned", True, COLOR_TEXT_MUTED)
+                surface.blit(empty_lbl, (self.opp_list_rect.left + 8, self.opp_list_rect.top + 8))
+            else:
+                for i, tid in enumerate(opp.properties):
+                    row_y = self.opp_list_rect.top + i * 28 - self.opp_scroll
+                    if row_y + 28 < self.opp_list_rect.top or row_y > self.opp_list_rect.bottom:
+                        continue
+                    t = self.tiles[tid]
+                    is_sel = tid in self.requested_props
+                    bg = (38, 54, 84) if is_sel else (30, 41, 59)
+                    r = pygame.Rect(self.opp_list_rect.left, row_y, 276, 24)
+                    pygame.draw.rect(surface, bg, r, border_radius=4)
+                    if is_sel:
+                        pygame.draw.rect(surface, COLOR_TEXT_GOLD, r, width=1, border_radius=4)
+                    
+                    col = DISTRICT_COLORS.get(t.group, (71, 85, 105))
+                    pygame.draw.circle(surface, col, (self.opp_list_rect.left + 12, row_y + 12), 5)
+                    n_txt = self.font.render(f"{t.name} (${t.price})", True, COLOR_TEXT_WHITE)
+                    surface.blit(n_txt, (self.opp_list_rect.left + 24, row_y + 3))
+
+            surface.set_clip(old_clip)
+
+            max_o_scroll = self._get_opp_max_scroll()
+            if max_o_scroll > 0:
+                sb_x = self.opp_list_rect.right - 6
+                sb_track = pygame.Rect(sb_x, self.opp_list_rect.top, 4, self.opp_list_rect.height)
+                pygame.draw.rect(surface, (30, 41, 59), sb_track, border_radius=2)
+                thumb_h = max(24, int(self.opp_list_rect.height * (self.opp_list_rect.height / (len(opp.properties) * 28))))
+                thumb_travel = self.opp_list_rect.height - thumb_h
+                thumb_y = self.opp_list_rect.top + int((self.opp_scroll / max_o_scroll) * thumb_travel)
+                pygame.draw.rect(surface, (100, 116, 139), pygame.Rect(sb_x - 1, thumb_y, 6, thumb_h), border_radius=3)
 
             c_req_lbl = self.font.render(f"Cash Request: ${self.requested_cash}", True, COLOR_TEXT_GOLD)
             surface.blit(c_req_lbl, (self.x + 360, self.y + 364))
